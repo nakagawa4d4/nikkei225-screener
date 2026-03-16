@@ -157,32 +157,6 @@ CACHE_DIR = "screener_cache"
 # ==========================================
 # データ取得 (リトライ・キャッシュ機構付き)
 # ==========================================
-def fetch_fundamentals(tickers: list[str]) -> dict:
-    """
-    指定されたティッカーリストに対するファンダメンタル指標（PER, PBR, ROE, 配当利回りなど）を並列取得する。
-    """
-    fund_data = {}
-    print(f"ファンダメンタル指標（PER, PBR, ROEなど）を取得します...")
-
-    def fetch_single(ticker):
-        try:
-            info = yf.Ticker(ticker).info
-            return ticker, {
-                "PER": info.get("trailingPE"),
-                "PBR": info.get("priceToBook"),
-                "ROE": info.get("returnOnEquity"),
-                "DivYield_Pct": info.get("dividendYield", 0) * 100 if info.get("dividendYield") else None
-            }
-        except Exception:
-            return ticker, {"PER": None, "PBR": None, "ROE": None, "DivYield_Pct": None}
-
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        results = executor.map(fetch_single, tickers)
-        for ticker, data in results:
-            fund_data[ticker] = data
-
-    return fund_data
-
 def fetch_stock_data(tickers: list[str], lookback_days: int) -> dict:
     """
     指定されたティッカーの株価データを取得する。
@@ -223,14 +197,10 @@ def fetch_stock_data(tickers: list[str], lookback_days: int) -> dict:
                         print(f"Warning: {ticker} のデータが取得できませんでした。")
             
             
-            # 成功したらファンダメンタルデータも取得して結合
-            fundamentals = fetch_fundamentals(list(data_dict.keys()))
-            
             final_data = {}
             for t, df in data_dict.items():
                 final_data[t] = {
-                    'df': df,
-                    'fundamentals': fundamentals.get(t, {"PER": None, "PBR": None, "ROE": None, "DivYield_Pct": None})
+                    'df': df
                 }
             
             print(f"データ取得完了 ({len(final_data)}/{len(tickers)} 銘柄)")
@@ -333,7 +303,6 @@ def screen_stocks(data_dict: dict) -> pd.DataFrame:
             continue # 日経平均自体はスルー表示しない
             
         df = info_dict['df']
-        funds = info_dict['fundamentals']
         if df.empty or len(df) < 20: # 少なくとも20日分のデータがないと指標計算不可
             continue
             
@@ -347,13 +316,6 @@ def screen_stocks(data_dict: dict) -> pd.DataFrame:
         if pd.isna(latest_row['RSI_14']) or pd.isna(latest_row['Volume_Surge_Ratio']):
             continue
             
-        # ファンダメンタルデータの取得
-        per = funds.get('PER')
-        pbr = funds.get('PBR')
-        roe_dec = funds.get('ROE')
-        roe = roe_dec * 100 if roe_dec is not None else None
-        div_yield = funds.get('DivYield_Pct')
-        
         record = {
             'Ticker': ticker,
             'Date': df_ind.index[-1].strftime('%Y-%m-%d'),
@@ -368,10 +330,6 @@ def screen_stocks(data_dict: dict) -> pd.DataFrame:
             'BB_Upper_2': np.round(latest_row['BB_Upper_2'], 2),
             'MACD': np.round(latest_row['MACD'], 2),
             'MACD_Hist': np.round(latest_row['MACD_Hist'], 2),
-            'PER': per,
-            'PBR': pbr,
-            'ROE_%': roe,
-            'Div_Yield_%': div_yield,
             'Reasons': []
         }
         
@@ -432,16 +390,6 @@ def screen_stocks(data_dict: dict) -> pd.DataFrame:
             is_trending_up = True
             
         record['Is_Buying_Pressure'] = is_trending_up
-        
-        # 7. ファンダメンタルズ条件（バリュー/高収益）
-        if pbr is not None and pbr < 1.0:
-            reasons.append(f"割安(PBR {pbr:.2f}倍)")
-        if per is not None and per > 0 and per < 15:
-            reasons.append(f"低PER({per:.1f}倍)")
-        if roe is not None and roe > 10:
-            reasons.append(f"高ROE({roe:.1f}%)")
-        if div_yield is not None and div_yield > 4.0:
-            reasons.append(f"高配当({div_yield:.1f}%)")
         
         record['Reasons'] = ", ".join(reasons) if reasons else "特記事項なし"
         
